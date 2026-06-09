@@ -1,39 +1,36 @@
 # Swift Clipboard Monitor
 
-A robust macOS clipboard monitoring library for Swift that provides real-time notifications when clipboard content changes, with built-in security features for password managers.
+A lightweight macOS library for observing the system clipboard and reacting to changes in real time. It polls `NSPasteboard`, captures every available representation (text, image, file URLs, and raw typed data), and delivers rich snapshots through a closure, an `AsyncStream`, a Combine publisher, or a SwiftUI view modifier. Built-in ignore rules let you safely skip transient data from password managers.
 
 ## Features
 
-- 🔄 **Real-time clipboard monitoring** with configurable polling interval
-- 🔐 **Password manager protection** - automatically ignores sensitive data from 1Password, LastPass, Bitwarden, and more
-- 📊 **Multiple consumption patterns**: Callbacks, Combine publishers, and AsyncStream
-- 🎨 **SwiftUI support** with ObservableObject and view modifiers
-- 🏷️ **Rich metadata**: source app, timestamps, data types, and more
-- ⚡ **Rate limiting** to prevent excessive processing
-- 🐛 **Debug logging** support
+- 📋 **Full clipboard capture** — collects text, images, file URLs, available types, and raw data for every change
+- 🔁 **Closure callbacks** — `start(onChange:)` delivers a `ClipboardContent` snapshot whenever the pasteboard changes
+- 🌊 **AsyncStream support** — iterate clipboard changes with `for await content in monitor.stream()`
+- 🔗 **Combine publisher** — subscribe via `monitor.publisher()` for reactive pipelines
+- 🖼️ **SwiftUI integration** — `.onClipboardChange { ... }` modifier and a `ClipboardMonitor.Observable` object with history
+- 🔒 **Password manager safety** — ships a curated block list and ignores transient/concealed data by default
+- 🚦 **Rate limiting** — `minimumTimeBetweenUpdates` throttles rapid clipboard churn
+- ⏱️ **Configurable polling** — tune `pollingInterval` to balance responsiveness and overhead
+- 🏷️ **Source attribution** — reads the copying app's bundle ID when available
+- 🧾 **History tracking** — the observable keeps a trimmed, configurable history of recent items
+- 🐞 **Debug logging** — opt-in `os.log` output for diagnosing behavior
 
 ## Requirements
 
 - macOS 15.0+
-- Swift 5.9+
-- Xcode 15.0+
+- Swift 6.0+
+- Xcode 16.0+
 
 ## Installation
 
 ### Swift Package Manager
-
-Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
     .package(url: "https://github.com/arraypress/swift-clipboard-monitor.git", from: "1.0.0")
 ]
 ```
-
-Or in Xcode:
-1. File → Add Package Dependencies
-2. Enter the repository URL
-3. Choose version requirements
 
 ## Usage
 
@@ -44,48 +41,38 @@ import ClipboardMonitor
 
 let monitor = ClipboardMonitor()
 
-// Start monitoring with a callback
 monitor.start { content in
     guard !content.shouldIgnore else { return }
-    
-    print("Clipboard changed!")
-    print("Text: \(content.stringValue ?? "none")")
-    print("Source: \(content.sourceAppBundleId ?? "unknown")")
-    print("Types: \(content.availableTypes)")
+    print("Clipboard changed:", content.stringValue ?? "")
 }
 
-// Stop monitoring when done
+// Later
 monitor.stop()
 ```
 
-### Password Manager Protection
+### Blocking Password Managers
 
 ```swift
-// Block password managers automatically
+import ClipboardMonitor
+
 let monitor = ClipboardMonitor(blockPasswordManagers: true)
-
-// Or configure manually
-monitor.ignoreRules = .passwordManagersSafe
-
-// Add custom blocked apps
-monitor.ignoreRules.blockedAppBundleIds.insert("com.suspicious.app")
+monitor.start { content in
+    // Transient/concealed data and known password managers are flagged via content.shouldIgnore
+    guard !content.shouldIgnore else { return }
+    print(content.stringValue ?? "")
+}
 ```
 
-### Async/Await with AsyncStream
+### AsyncStream
 
 ```swift
+import ClipboardMonitor
+
 let monitor = ClipboardMonitor()
 
 for await content in monitor.stream() {
     guard !content.shouldIgnore else { continue }
-    
-    if let text = content.stringValue {
-        print("New text: \(text)")
-    }
-    
-    if content.hasImage {
-        print("Image copied!")
-    }
+    print("Changed:", content.stringValue ?? "")
 }
 ```
 
@@ -93,177 +80,122 @@ for await content in monitor.stream() {
 
 ```swift
 import Combine
+import ClipboardMonitor
 
-var cancellables = Set<AnyCancellable>()
 let monitor = ClipboardMonitor()
+var cancellables = Set<AnyCancellable>()
 
 monitor.publisher()
     .filter { !$0.shouldIgnore }
-    .filter { $0.hasRichText }
     .sink { content in
-        print("Rich text copied: \(content.stringValue ?? "")")
+        print("Changed:", content.stringValue ?? "")
     }
     .store(in: &cancellables)
 ```
 
-### SwiftUI Integration
-
-#### Using ObservableObject
+### SwiftUI
 
 ```swift
 import SwiftUI
+import ClipboardMonitor
 
 struct ContentView: View {
-    @StateObject private var clipboard = ClipboardMonitor.Observable(
-        blockPasswordManagers: true
-    )
-    
+    var body: some View {
+        Text("Copy something")
+            .onClipboardChange { content in
+                print("Clipboard:", content.stringValue ?? "")
+            }
+    }
+}
+```
+
+Or use the observable object directly for live state and history:
+
+```swift
+import SwiftUI
+import ClipboardMonitor
+
+struct HistoryView: View {
+    @StateObject private var clipboard = ClipboardMonitor.Observable(blockPasswordManagers: true)
+
     var body: some View {
         VStack {
-            Text("Current: \(clipboard.current?.stringValue ?? "Empty")")
-            
+            Text(clipboard.current?.stringValue ?? "Empty")
             List(clipboard.history, id: \.changeCount) { item in
-                Text(item.stringValue ?? "Non-text content")
-                    .font(.caption)
+                Text(item.stringValue ?? "<non-text>")
             }
-        }
-        .onChange(of: clipboard.current) { _, newValue in
-            if let content = newValue {
-                handleClipboardChange(content)
-            }
+            Button("Clear History") { clipboard.clearHistory() }
         }
     }
 }
 ```
 
-#### Using View Modifier
+### Configuration
 
 ```swift
-struct MyView: View {
-    var body: some View {
-        Text("Monitoring clipboard...")
-            .onClipboardChange { content in
-                print("Clipboard changed: \(content.stringValue ?? "")")
-            }
-    }
-}
-```
-
-## Configuration Options
-
-### Polling Interval
-
-```swift
-// Check every 100ms instead of default 300ms
-monitor.pollingInterval = 0.1
-```
-
-### Rate Limiting
-
-```swift
-// Minimum 1 second between notifications
+let monitor = ClipboardMonitor()
+monitor.pollingInterval = 0.5
 monitor.minimumTimeBetweenUpdates = 1.0
-```
-
-### Debug Logging
-
-```swift
-// Enable detailed logging
 monitor.debugLogging = true
-```
-
-### Ignore Rules
-
-```swift
-// Ignore clipboard changes from your own app
+monitor.ignoreRules.blockedAppBundleIds.insert("com.example.app")
 monitor.ignoreRules.ignoreSelfPastes = true
-
-// Don't ignore transient data (not recommended)
-monitor.ignoreRules.ignoreTransientData = false
 ```
 
-## Clipboard Content Properties
+## How It Works
 
-The `ClipboardContent` struct provides rich information about clipboard data:
+`ClipboardMonitor` runs a `Timer.publish` poller on the main run loop and compares `NSPasteboard.general.changeCount` against the last seen value. When it changes, it reads every available type into a `ClipboardContent` snapshot, evaluates the configured `IgnoreRules` (transient/concealed data, blocked bundle IDs, self-pastes), and notifies subscribers.
 
-```swift
-let content: ClipboardContent = ...
+## Models
 
-// Basic properties
-content.timestamp           // When content was captured
-content.changeCount         // macOS clipboard change count
-content.stringValue         // Text content if available
-content.image              // NSImage if available
-content.fileURLs           // Array of file URLs if available
+### `ClipboardContent`
 
-// Metadata
-content.sourceAppBundleId  // App that set the clipboard
-content.isTransient        // Whether data is marked as sensitive
-content.shouldIgnore       // Whether to ignore based on rules
-content.totalSize          // Total size in bytes
+| Property | Type | Description |
+|----------|------|-------------|
+| `timestamp` | `Date` | When this content was detected |
+| `changeCount` | `Int` | Pasteboard change count at capture time |
+| `sourceAppBundleId` | `String?` | Bundle ID of the copying app, if available |
+| `isTransient` | `Bool` | Whether the data is transient/concealed |
+| `stringValue` | `String?` | Text content, if present |
+| `image` | `NSImage?` | Image content, if present |
+| `fileURLs` | `[URL]?` | File URLs, if present |
+| `availableTypes` | `[NSPasteboard.PasteboardType]` | All types on the pasteboard |
+| `allData` | `[NSPasteboard.PasteboardType: Data]` | Raw data keyed by type |
+| `shouldIgnore` | `Bool` | Whether ignore rules flagged this content |
+| `totalSize` | `Int` | Total size of all data in bytes (computed) |
+| `hasRichText` | `Bool` | Whether RTF/RTFD/HTML is present (computed) |
+| `hasImage` | `Bool` | Whether TIFF/PNG/PDF is present (computed) |
 
-// Type checking
-content.hasRichText        // Has RTF/HTML content
-content.hasImage           // Has image content
-content.hasType(.pdf)      // Check for specific type
+`ClipboardContent` also exposes `hasType(_:)`, `data(forType:)`, and `isFrom(bundleId:)` helpers.
 
-// Raw data access
-content.availableTypes     // All pasteboard types
-content.allData           // Dictionary of all raw data
-content.data(forType: .html) // Get specific type data
-```
+### `IgnoreRules`
 
-## Security Considerations
+| Property | Type | Description |
+|----------|------|-------------|
+| `blockedAppBundleIds` | `Set<String>` | Bundle IDs to ignore |
+| `ignoreTransientData` | `Bool` | Ignore transient/concealed data (default `true`) |
+| `ignoreSelfPastes` | `Bool` | Ignore pastes from the host app (default `false`) |
 
-This library helps protect sensitive data by:
+`IgnoreRules.passwordManagersSafe` provides a preset with common password manager bundle IDs blocked.
 
-1. **Ignoring transient/concealed data** - Password managers mark sensitive data with special flags
-2. **Blocking known password managers** - Pre-configured list of common password manager bundle IDs
-3. **Source app detection** - Know which app set the clipboard
+## Use Cases
 
-The library includes protection for:
-- 1Password (7 & 8)
-- LastPass
-- Dashlane
-- Bitwarden
-- Keeper Security
-
-## Performance
-
-- **Efficient polling** - Only processes when clipboard actually changes
-- **Rate limiting** - Prevent excessive processing
-- **Weak references** - Proper memory management in publishers
-- **MainActor isolation** - Thread-safe pasteboard access
+- Clipboard history and manager apps
+- Snippet capture and productivity tools
+- Security-aware utilities that need to skip sensitive copies
+- Automations that react to copied URLs, files, or images
 
 ## Testing
-
-The library includes comprehensive tests. Run them with:
 
 ```bash
 swift test
 ```
 
-Note: Some tests may show sandbox warnings for file URLs - this is normal and doesn't affect functionality.
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
+The test suite covers change detection, content capture, ignore-rule evaluation (including transient data and blocked bundle IDs), and rate limiting.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License — see LICENSE file for details.
 
 ## Author
 
-Created by David Sherlock (ArrayPress) in 2025.
-
-## Acknowledgments
-
-- Thanks to the Swift community for feedback and suggestions
-- Special thanks to password manager developers for implementing clipboard security markers
+Created by David Sherlock ([ArrayPress](https://github.com/arraypress)) in 2026.
