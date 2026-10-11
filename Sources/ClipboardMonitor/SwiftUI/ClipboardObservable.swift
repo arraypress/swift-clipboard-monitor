@@ -6,6 +6,7 @@
 //
 
 #if canImport(SwiftUI)
+import Combine
 import SwiftUI
 
 extension ClipboardMonitor {

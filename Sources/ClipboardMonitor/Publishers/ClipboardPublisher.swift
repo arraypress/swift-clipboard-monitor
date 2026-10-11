@@ -5,6 +5,7 @@
 //  Created by David Sherlock on 10/7/25.
 //
 
+import AppKit
 import Combine
 import Foundation
 
